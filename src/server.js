@@ -10,27 +10,18 @@ import {
   QWEN3_600M_INST_Q4,
 } from "@qvac/sdk";
 
-// ---------- CLI ----------
-const args = process.argv.slice(2);
-const filePath = args.find((a) => !a.startsWith("--"));
+// Silent guardrail: refuse answers when the retrieved context is very weak.
+// 0.10 is a safe low value — it only triggers for genuinely unrelated questions.
+const MIN_TOP_SCORE = 0.10;
+
 const PORT = 3000;
 
-if (!filePath) {
-  console.error("Usage: node src/server.js <document.txt>");
-  process.exit(1);
-}
-if (!fs.existsSync(filePath)) {
-  console.error(`ERROR: File not found: ${filePath}`);
-  process.exit(1);
-}
+// ---------- State ----------
+let currentWorkspace = null;
+let workspaceCounter = 0;
+let currentDocumentText = "";
 
-const documentText = fs.readFileSync(filePath, "utf-8");
-if (!documentText.trim()) {
-  console.error("ERROR: Document is empty.");
-  process.exit(1);
-}
-
-// ---------- HTML page ----------
+// ---------- HTML ----------
 const HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -41,87 +32,64 @@ const HTML = `<!DOCTYPE html>
   * { box-sizing: border-box; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-    background: #0e0e10;
-    color: #e7e7e9;
-    margin: 0;
-    padding: 40px 20px;
-    display: flex;
-    justify-content: center;
+    background: #0e0e10; color: #e7e7e9;
+    margin: 0; padding: 40px 20px;
+    display: flex; justify-content: center;
   }
-  .wrap { width: 100%; max-width: 760px; }
+  .wrap { width: 100%; max-width: 820px; }
   h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
   .sub { color: #8a8a92; font-size: 13px; margin-bottom: 24px; }
   .badge {
-    display: inline-block;
-    background: #1a1a1d;
-    border: 1px solid #2a2a2e;
-    color: #8fd694;
-    font-size: 11px;
-    padding: 3px 8px;
-    border-radius: 999px;
-    margin-right: 6px;
+    display: inline-block; background: #1a1a1d; border: 1px solid #2a2a2e;
+    color: #8fd694; font-size: 11px; padding: 3px 8px;
+    border-radius: 999px; margin-right: 6px;
   }
   .card {
-    background: #17171a;
-    border: 1px solid #26262b;
-    border-radius: 12px;
-    padding: 18px;
-    margin-bottom: 16px;
+    background: #17171a; border: 1px solid #26262b;
+    border-radius: 12px; padding: 18px; margin-bottom: 16px;
   }
-  .label { font-size: 12px; color: #8a8a92; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px; }
+  .label {
+    font-size: 12px; color: #8a8a92; text-transform: uppercase;
+    letter-spacing: 0.06em; margin-bottom: 8px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
   textarea, input {
-    width: 100%;
-    background: #0e0e10;
-    color: #e7e7e9;
-    border: 1px solid #2a2a2e;
-    border-radius: 8px;
-    padding: 10px 12px;
-    font-family: inherit;
-    font-size: 14px;
-    outline: none;
-    resize: vertical;
+    width: 100%; background: #0e0e10; color: #e7e7e9;
+    border: 1px solid #2a2a2e; border-radius: 8px;
+    padding: 10px 12px; font-family: inherit; font-size: 14px;
+    outline: none; resize: vertical;
   }
   textarea:focus, input:focus { border-color: #4a7cff; }
+  #docText {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px; line-height: 1.5; min-height: 200px;
+  }
   button {
-    background: #4a7cff;
-    color: white;
-    border: 0;
-    border-radius: 8px;
-    padding: 10px 18px;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    margin-top: 12px;
+    background: #4a7cff; color: white; border: 0;
+    border-radius: 8px; padding: 10px 18px;
+    font-size: 14px; font-weight: 600; cursor: pointer;
   }
   button:disabled { background: #2a2a3e; cursor: not-allowed; }
-  .doc-preview {
-    background: #0e0e10;
-    border: 1px solid #222226;
-    border-radius: 8px;
-    padding: 12px 14px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 12px;
-    color: #9a9aa2;
-    white-space: pre-wrap;
-    max-height: 160px;
-    overflow-y: auto;
-    line-height: 1.5;
-  }
-  #answer {
-    white-space: pre-wrap;
-    line-height: 1.55;
-    font-size: 15px;
-  }
-  #sources {
-    font-size: 12px;
-    color: #8a8a92;
-    margin-top: 12px;
-    padding-top: 12px;
-    border-top: 1px solid #222226;
-  }
+  .row { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
+  .status { font-size: 12px; color: #8a8a92; margin-left: auto; }
+  .status.ok { color: #8fd694; }
+  .status.err { color: #ff7b7b; }
+  #answer { white-space: pre-wrap; line-height: 1.55; font-size: 15px; }
+  #answer.refused { color: #ffb86b; font-style: italic; }
   .hidden { display: none; }
-  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid #2a2a3e; border-top-color: #4a7cff; border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 8px; }
+  .spinner {
+    display: inline-block; width: 12px; height: 12px;
+    border: 2px solid #2a2a3e; border-top-color: #4a7cff;
+    border-radius: 50%; animation: spin 0.7s linear infinite;
+    vertical-align: middle; margin-right: 8px;
+  }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .empty-note {
+    color: #6a6a72; font-size: 13px;
+    text-align: center; padding: 24px;
+    border: 1px dashed #26262b; border-radius: 8px;
+    margin-top: 12px;
+  }
 </style>
 </head>
 <body>
@@ -134,42 +102,106 @@ const HTML = `<!DOCTYPE html>
     </div>
 
     <div class="card">
-      <div class="label">Your document</div>
-      <div class="doc-preview" id="docPreview">Loading…</div>
+      <div class="label">
+        <span>1. Your document</span>
+        <span class="status" id="docStatus">Empty</span>
+      </div>
+      <textarea id="docText" rows="10" placeholder="Paste your document here…"></textarea>
+      <div class="row">
+        <button id="loadBtn">Load document</button>
+        <span class="status" id="loadHint">Paste text above, then click Load.</span>
+      </div>
     </div>
 
     <div class="card">
-      <div class="label">Ask a question</div>
-      <textarea id="query" rows="2" placeholder="What is the budget?"></textarea>
-      <button id="askBtn">Ask</button>
+      <div class="label"><span>2. Ask a question</span></div>
+      <textarea id="query" rows="2" placeholder="Type your question about the document…"></textarea>
+      <div class="row">
+        <button id="askBtn">Ask</button>
+        <span class="status" id="askHint">⌘+Enter to send</span>
+      </div>
+      <div id="notReadyNote" class="empty-note">Load a document first to enable questions.</div>
     </div>
 
     <div class="card hidden" id="answerCard">
-      <div class="label">Answer</div>
+      <div class="label"><span>Answer</span></div>
       <div id="answer"></div>
-      <div id="sources"></div>
     </div>
   </div>
 
 <script>
+  const docTextEl = document.getElementById("docText");
+  const docStatusEl = document.getElementById("docStatus");
+  const loadBtn = document.getElementById("loadBtn");
+  const loadHintEl = document.getElementById("loadHint");
   const queryEl = document.getElementById("query");
   const askBtn = document.getElementById("askBtn");
   const answerCard = document.getElementById("answerCard");
   const answerEl = document.getElementById("answer");
-  const sourcesEl = document.getElementById("sources");
-  const docPreviewEl = document.getElementById("docPreview");
+  const notReadyNote = document.getElementById("notReadyNote");
 
-  fetch("/document").then(r => r.text()).then(t => {
-    docPreviewEl.textContent = t;
-  });
+  let documentLoaded = false;
+
+  function setStatus(el, text, cls) {
+    el.textContent = text;
+    el.className = "status" + (cls ? " " + cls : "");
+  }
+
+  function updateAskState() {
+    if (documentLoaded) {
+      notReadyNote.classList.add("hidden");
+      askBtn.disabled = false;
+      queryEl.disabled = false;
+    } else {
+      notReadyNote.classList.remove("hidden");
+      askBtn.disabled = true;
+      queryEl.disabled = true;
+    }
+  }
+
+  // Start with empty document
+  docTextEl.value = "";
+  updateAskState();
+
+  async function loadDocument() {
+    const text = docTextEl.value.trim();
+    if (!text) {
+      setStatus(docStatusEl, "Cannot load empty document", "err");
+      return;
+    }
+    loadBtn.disabled = true;
+    setStatus(docStatusEl, "Ingesting…");
+    try {
+      const res = await fetch("/load", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        setStatus(docStatusEl, "Error: " + data.error, "err");
+        documentLoaded = false;
+      } else {
+        setStatus(docStatusEl, "Ready (" + data.chars + " chars)", "ok");
+        setStatus(loadHintEl, "Document loaded. Ask a question below.", "ok");
+        documentLoaded = true;
+      }
+    } catch (e) {
+      setStatus(docStatusEl, "Request failed: " + e.message, "err");
+      documentLoaded = false;
+    } finally {
+      loadBtn.disabled = false;
+      updateAskState();
+    }
+  }
 
   async function ask() {
     const q = queryEl.value.trim();
     if (!q) return;
     askBtn.disabled = true;
     answerCard.classList.remove("hidden");
+    answerEl.className = "";
     answerEl.innerHTML = '<span class="spinner"></span>Thinking…';
-    sourcesEl.textContent = "";
     try {
       const res = await fetch("/ask", {
         method: "POST",
@@ -180,8 +212,13 @@ const HTML = `<!DOCTYPE html>
       if (data.error) {
         answerEl.textContent = "Error: " + data.error;
       } else {
-        answerEl.textContent = data.answer || "(empty)";
-        sourcesEl.textContent = "Retrieved " + data.resultCount + " chunk(s) from your document.";
+        if (data.refused) {
+          answerEl.className = "refused";
+          answerEl.textContent = data.answer;
+        } else {
+          answerEl.className = "";
+          answerEl.textContent = data.answer || "(empty)";
+        }
       }
     } catch (e) {
       answerEl.textContent = "Request failed: " + e.message;
@@ -190,6 +227,7 @@ const HTML = `<!DOCTYPE html>
     }
   }
 
+  loadBtn.addEventListener("click", loadDocument);
   askBtn.addEventListener("click", ask);
   queryEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) ask();
@@ -198,7 +236,21 @@ const HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
-// ---------- HTTP server ----------
+// ---------- Ingest ----------
+async function ingestDocument(text, embedModelId) {
+  workspaceCounter++;
+  const workspace = `privatedoc-${workspaceCounter}`;
+  await ragIngest({
+    modelId: embedModelId,
+    workspace,
+    documents: [text],
+    chunk: false,
+  });
+  currentWorkspace = workspace;
+  currentDocumentText = text;
+}
+
+// ---------- Server ----------
 async function main() {
   console.log("Loading embedding model...");
   const embedModelId = await loadModel({
@@ -212,15 +264,6 @@ async function main() {
     modelType: "llamacpp-completion",
   });
 
-  console.log("Ingesting document...");
-  const workspace = "privatedoc";
-  await ragIngest({
-    modelId: embedModelId,
-    workspace,
-    documents: [documentText],
-    chunk: false,
-  });
-
   const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && req.url === "/") {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -228,9 +271,25 @@ async function main() {
       return;
     }
 
-    if (req.method === "GET" && req.url === "/document") {
-      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end(documentText);
+    if (req.method === "POST" && req.url === "/load") {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", async () => {
+        try {
+          const { text } = JSON.parse(body || "{}");
+          if (!text || !text.trim()) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Empty document" }));
+            return;
+          }
+          await ingestDocument(text, embedModelId);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, chars: text.length }));
+        } catch (err) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: String(err.message || err) }));
+        }
+      });
       return;
     }
 
@@ -245,20 +304,41 @@ async function main() {
             res.end(JSON.stringify({ error: "Empty query" }));
             return;
           }
+          if (!currentWorkspace) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "No document loaded yet" }));
+            return;
+          }
 
           const results = await ragSearch({
             modelId: embedModelId,
-            workspace,
+            workspace: currentWorkspace,
             query,
             topK: 3,
           });
+
+          const topScore = results.length
+            ? Math.max(...results.map((r) => (r && typeof r.score === "number") ? r.score : 0))
+            : 0;
+
+          console.log(`[ASK] ${JSON.stringify(query)}  top=${topScore.toFixed(4)}`);
+
+          if (topScore < MIN_TOP_SCORE) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+              refused: true,
+              answer: "This isn't covered in the document.",
+            }));
+            return;
+          }
 
           const context = results
             .map((r) => (typeof r === "string" ? r : r.content || ""))
             .join("\n\n");
 
-          const prompt = `Answer the question using ONLY the context below.
-If the answer is not in the context, say "I don't know based on the provided document."
+          const prompt = `Use the context below to answer the question.
+Answer clearly and concisely using only information from the context.
+If the context genuinely does not contain the answer, reply exactly: "This isn't covered in the document."
 
 Context:
 ${context}
@@ -276,10 +356,15 @@ Answer:`;
 
           let answer = "";
           for await (const token of stream.tokenStream) answer += token;
-          answer = answer.replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/^Answer:\s*/i, "").trim();
+          answer = answer
+            .replace(/<think>[\s\S]*?<\/think>/gi, "")
+            .replace(/^Answer:\s*/i, "")
+            .trim();
+
+          const refused = /isn'?t covered in the document/i.test(answer);
 
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ answer, resultCount: results.length }));
+          res.end(JSON.stringify({ refused, answer }));
         } catch (err) {
           res.writeHead(500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: String(err.message || err) }));
@@ -294,7 +379,8 @@ Answer:`;
 
   server.listen(PORT, () => {
     console.log(`\n✅ Ready → http://localhost:${PORT}\n`);
-    console.log("Open that URL in your browser. Press Ctrl+C to stop.");
+    console.log("Paste your document in the browser, click Load, then ask.");
+    console.log("Press Ctrl+C to stop.");
   });
 
   let shuttingDown = false;
