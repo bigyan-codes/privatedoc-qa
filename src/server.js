@@ -7,12 +7,12 @@ import {
   completion,
   unloadModel,
   EMBEDDINGGEMMA_300M_Q4_0,
-  QWEN3_600M_INST_Q4,
+  QWEN3_1_7B_INST_Q4,
 } from "@qvac/sdk";
 
 // Silent guardrail: refuse answers when the retrieved context is very weak.
 // 0.10 is a safe low value — it only triggers for genuinely unrelated questions.
-const MIN_TOP_SCORE = 0.10;
+const MIN_TOP_SCORE = 0.35;
 
 const PORT = 3000;
 
@@ -260,7 +260,7 @@ async function main() {
 
   console.log("Loading LLM...");
   const llmId = await loadModel({
-    modelSrc: QWEN3_600M_INST_Q4,
+    modelSrc: QWEN3_1_7B_INST_Q4,
     modelType: "llamacpp-completion",
   });
 
@@ -314,7 +314,7 @@ async function main() {
             modelId: embedModelId,
             workspace: currentWorkspace,
             query,
-            topK: 3,
+            topK: 2,
           });
 
           const topScore = results.length
@@ -336,9 +336,19 @@ async function main() {
             .map((r) => (typeof r === "string" ? r : r.content || ""))
             .join("\n\n");
 
-          const prompt = `Use the context below to answer the question.
-Answer clearly and concisely using only information from the context.
-If the context genuinely does not contain the answer, reply exactly: "This isn't covered in the document."
+          const prompt = `Use the context below to answer the question. Answer in one or two sentences using only information from the context.
+
+Example of good behavior:
+Context: "The budget is $45,000 for Q2."
+Question: "What is the budget?"
+Answer: The budget is $45,000 for Q2.
+
+Example of refusing:
+Context: "The budget is $45,000 for Q2."
+Question: "What is the CEO's name?"
+Answer: This isn't covered in the document.
+
+Now your turn.
 
 Context:
 ${context}
