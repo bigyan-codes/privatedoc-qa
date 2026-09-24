@@ -1,5 +1,5 @@
 {
-  "name": "receiptsnap",
+  "name": "privatedoc-qa",
   "version": "1.0.0",
   "description": "On-device document Q&A with Tether's QVAC SDK",
   "type": "module",
