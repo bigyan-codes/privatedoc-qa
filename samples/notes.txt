@@ -1,0 +1,12 @@
+Project Phoenix - Internal Notes
+Date: March 15, 2026
+
+Budget: $45,000 allocated for Q2 development.
+Team: Sarah (lead), Marcus (backend), Priya (design).
+Deadline: June 30, 2026.
+
+Key risks:
+- Third-party API dependency may delay integration.
+- Sarah is on leave from May 1-15.
+
+Next milestone: Prototype demo by April 20.
