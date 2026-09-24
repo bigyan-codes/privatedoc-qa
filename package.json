@@ -1,7 +1,7 @@
 {
   "name": "receiptsnap",
   "version": "1.0.0",
-  "description": "On-device receipt OCR and structuring with QVAC SDK",
+  "description": "On-device document Q&A with Tether's QVAC SDK",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
